@@ -40,7 +40,7 @@ MISTRAL_CHAT_URL = "https://api.mistral.ai/v1/chat/completions"
 DEFAULT_MODEL = "mistral-small-latest"
 DEFAULT_CARD_MODEL = "mistral-medium-3-5"
 GEMINI_GENERATE_URL_TEMPLATE = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-DEFAULT_GEMINI_MODEL = "gemma-4-31b-it"
+DEFAULT_GEMINI_MODEL = "gemma-4-26b-a4b-it"
 MAX_INPUT_LENGTH = 4000
 MAX_COMMAND_LENGTH = 1200
 
