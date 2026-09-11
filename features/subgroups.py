@@ -75,16 +75,12 @@ def _unwrap_message(message: "MessageEv"):
     msg = message.Message
     for _ in range(5):
         found_wrapper = False
-        for field_desc, value in msg.ListFields():
-            if field_desc.name in (
-                "ephemeralMessage", "viewOnceMessage", "viewOnceMessageV2",
-                "documentWithCaptionMessage", "groupMentionedMessage",
-            ):
-                inner = getattr(value, "message", None)
-                if inner and inner.ListFields():
-                    msg = inner
-                    found_wrapper = True
-                    break
+        for _field_desc, value in msg.ListFields():
+            inner = getattr(value, "message", None)
+            if inner is not None and inner.ListFields():
+                msg = inner
+                found_wrapper = True
+                break
         if not found_wrapper:
             break
     return msg

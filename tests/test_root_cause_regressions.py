@@ -448,6 +448,38 @@ def test_claim_message_release_allows_retry_after_dispatch_failure(factory):
     assert claim_message(factory, "msg-1", "alice@s.whatsapp.net", "group@g.us") is True
 
 
+def test_empty_delivery_does_not_suppress_text_duplicate(factory):
+    from types import SimpleNamespace
+
+    from bot import _claim_dispatchable_message
+    from neonize.proto.waE2E.WAWebProtobufsE2E_pb2 import Message
+
+    empty = SimpleNamespace(Message=Message())
+    text = SimpleNamespace(Message=Message(conversation="!todo"))
+
+    assert _claim_dispatchable_message(
+        factory, empty, "same-id", "alice@s.whatsapp.net", "group@g.us"
+    ) is None
+    assert _claim_dispatchable_message(
+        factory, text, "same-id", "alice@s.whatsapp.net", "group@g.us"
+    ) is True
+    assert _claim_dispatchable_message(
+        factory, text, "same-id", "alice@s.whatsapp.net", "group@g.us"
+    ) is False
+
+
+def test_text_extraction_unwraps_current_whatsapp_envelopes():
+    from types import SimpleNamespace
+
+    from neonize.proto.waE2E.WAWebProtobufsE2E_pb2 import Message
+    from features.subgroups import _get_text
+
+    for field in ("editedMessage", "deviceSentMessage"):
+        wrapped = Message()
+        getattr(wrapped, field).message.conversation = "!posted 42 insta"
+        assert _get_text(SimpleNamespace(Message=wrapped)) == "!posted 42 insta"
+
+
 def test_reply_message_destination_check_honors_to_and_reply_privately():
     from features.neonize_policy import _destinations
 

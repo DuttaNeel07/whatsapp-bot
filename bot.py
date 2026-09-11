@@ -211,6 +211,18 @@ def _set_readiness(path: Path, ready: bool) -> None:
         log.exception("Could not update readiness marker %s", path)
 
 
+def _claim_dispatchable_message(
+    session_factory, message, message_id: str, actor_jid, chat_jid: str,
+) -> bool | None:
+    """Claim text-bearing messages; leave empty events retryable."""
+    from features.subgroups import _get_text
+
+    if not _get_text(message):
+        return None
+    from db.nl_state import claim_message
+    return claim_message(session_factory, message_id, actor_jid, chat_jid)
+
+
 # Kept available for callers that import bot configuration, without creating a
 # database connection or a Neonize session as an import side effect.
 config = _build_config()
@@ -515,13 +527,24 @@ def main() -> None:
                 queued_chat = getattr(queued_source, "Chat", None)
                 queued_id = getattr(queued_info, "ID", "")
                 queued_chat_jid = _jid_string(queued_chat)
-                from db.nl_state import claim_message, release_message
-                if not claim_message(
+                from db.nl_state import release_message
+                claim = _claim_dispatchable_message(
                     runtime_config["db_session_factory"],
+                    queued_message,
                     queued_id,
                     getattr(queued_source, "Sender", ""),
                     queued_chat_jid,
-                ):
+                )
+                if claim is None:
+                    fields = [field.name for field, _value in queued_message.Message.ListFields()]
+                    log.info(
+                        "ignored inbound WhatsApp message with no extractable text "
+                        "id=%s fields=%s",
+                        queued_id,
+                        fields,
+                    )
+                    continue
+                if not claim:
                     continue
                 try:
                     with allow_reminder_reply(queued_message), allow_reply_to_source_chat(queued_message):
