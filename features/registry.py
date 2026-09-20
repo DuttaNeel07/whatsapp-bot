@@ -6,6 +6,7 @@ import logging
 from typing import Callable
 
 from neonize.events import MessageEv
+from features.sih import register as register_sih
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ def register_features(client, config: dict) -> Callable:
         register_reminders(client, config),
         register_reports(client, config),
         register_labels(client, config),
+        register_sih(client, config),
     ]
     # The incident feature owns its Flask listener and is not a MessageEv
     # handler, so start it after the four existing message features.

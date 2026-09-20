@@ -29,7 +29,7 @@ COPY . .
 # Create directories for runtime data
 RUN mkdir -p /app/data
 
-EXPOSE 8081 8082
+EXPOSE 8081 8082 8083
 
 ENTRYPOINT ["dumb-init", "--"]
 CMD ["python", "bot.py"]
