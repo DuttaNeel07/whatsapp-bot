@@ -27,6 +27,7 @@ services:
     ports:
       - "${INCIDENT_PORT:-8081}:8081"
       - "${FELLOWSHIP_ALERT_PORT:-8082}:8082"
+      - "${SIH_INGEST_PORT:-8083}:8083"
     volumes:
       - neonize-data:/app/data
     restart: unless-stopped

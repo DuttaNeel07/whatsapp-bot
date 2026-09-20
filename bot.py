@@ -70,6 +70,17 @@ def _build_config() -> dict:
             or os.getenv("GROUP_ID", "").strip()
             or None
         ),
+        "sih_group_id": (
+            os.getenv("SIH_GROUP_ID", "").strip()
+            or os.getenv("PBBOT_GROUP_ID", "").strip()
+            or os.getenv("GROUP_ID", "").strip()
+            or None
+        ),
+        "sih_threshold": int(os.getenv("SIH_THRESHOLD", "300")),
+        "sih_poll_seconds": int(os.getenv("SIH_POLL_SECONDS", "0")),
+        "sih_ps_url": os.getenv("SIH_PS_URL", "https://sih.gov.in/sih2026PS").strip(),
+        "sih_ingest_secret": os.getenv("SIH_INGEST_SECRET", "").strip(),
+        "sih_ingest_port": int(os.getenv("SIH_INGEST_PORT", "8083")),
         "fellowship_alert_secret": os.getenv("FELLOWSHIP_ALERT_SECRET", "").strip(),
         "fellowship_alert_port": int(os.getenv("FELLOWSHIP_ALERT_PORT", "8082")),
         "subgroup_blocked_users": _parse_group_ids("SUBGROUP_BLOCKED_USERS"),
@@ -129,6 +140,7 @@ def _allowed_outbound_groups(config: dict) -> set[str]:
         "reminder_group_id",
         "incident_group_id",
         "fellowship_alert_group_id",
+        "sih_group_id",
     )
 
 

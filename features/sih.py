@@ -1,0 +1,434 @@
+"""SIH 2026 problem-statement watcher.
+
+Scraping is intended to run in GitHub Actions (`scripts/sih_scrape.py`).
+The bot receives the payload on POST /sih-ingest, stores counts, and
+notifies the WhatsApp group the first time a PS crosses 300 submissions.
+
+Chat:
+  !sih              summary + hottest PS
+  !sih hot          every PS at or over the threshold
+  !sih top [n]      top n by submissions (default 10, max 25)
+  !sih <ps-number>  one problem statement
+  !sih refresh      scrape in-process (optional fallback; GHA is preferred)
+
+Help text is SIH_MODULE_HELP — import it in features/help.py.
+"""
+
+from __future__ import annotations
+
+import hmac
+import logging
+import socket
+import threading
+import time
+from typing import TYPE_CHECKING, Any, Callable
+
+from flask import Flask, jsonify, request
+
+from db.auth import gate
+from db.sih_store import SIHStore
+from features.sih_scrape import candidate_urls, scrape_problem_statements
+from features.subgroups import _get_text
+from features.text import public_text
+
+if TYPE_CHECKING:
+    from neonize.client import NewClient
+
+log = logging.getLogger(__name__)
+
+DEFAULT_URL = "https://sih.gov.in/sih2026PS"
+DEFAULT_THRESHOLD = 300
+DEFAULT_INGEST_PORT = 8083
+WHATSAPP_LIST_LIMIT = 20
+STARTUP_TIMEOUT_SECONDS = 5.0
+MAX_ROWS = 5000
+
+SIH_MODULE_HELP = (
+    "*SIH 2026 problem statements*\n\n"
+    "`!sih` — summary and hottest PS.\n"
+    "`!sih hot` — every PS at or over 300 submissions.\n"
+    "`!sih top [n]` — top n by submissions (default 10, max 25).\n"
+    "`!sih <ps-number>` — one problem statement, e.g. `!sih SIH1601`.\n"
+    "`!sih refresh` — scrape now from this host (fallback; GitHub Actions is preferred).\n\n"
+    "A GitHub Action scrapes sih.gov.in on a schedule and POSTs counts here. "
+    "The bot alerts the SIH group the first time a PS crosses 300 submissions."
+)
+
+
+def _build_chat_jid(value: str):
+    from neonize.utils import build_jid
+    from db.auth import normalize_group_jid
+
+    normalized = normalize_group_jid(value)
+    if not normalized:
+        raise ValueError("SIH alert group must be a WhatsApp group JID")
+    user, server = normalized.split("@", 1)
+    return build_jid(user, server)
+
+
+def _format_threshold_alert(row: dict[str, Any], threshold: int) -> str:
+    title = public_text(row.get("title") or "Untitled", limit=160)
+    org = public_text(row.get("organization") or "Unknown org", limit=80)
+    theme = public_text(row.get("theme") or "-", limit=60)
+    category = public_text(row.get("category") or "-", limit=40)
+    ps_number = public_text(row.get("ps_number") or "?", limit=40)
+    count = int(row.get("submitted_ideas_count") or 0)
+    limit = row.get("submitted_ideas_limit")
+    count_text = f"{count}/{limit}" if limit not in (None, "") else str(count)
+    deadline = public_text(row.get("deadline") or "-", limit=40)
+    return (
+        "*SIH 2026 PS crossed 300 submissions*\n\n"
+        f"*{ps_number}*\n"
+        f"{title}\n"
+        f"Organization: {org}\n"
+        f"Theme: {theme}\n"
+        f"Category: {category}\n"
+        f"Submissions: {count_text} (threshold {threshold})\n"
+        f"Deadline: {deadline}\n"
+        f"https://sih.gov.in/sih2026PS"
+    )
+
+
+def _format_ps_line(row: dict[str, Any]) -> str:
+    ps_number = public_text(row.get("ps_number") or "?", limit=32)
+    count = int(row.get("submitted_ideas_count") or 0)
+    limit = row.get("submitted_ideas_limit")
+    count_text = f"{count}/{limit}" if limit not in (None, "") else str(count)
+    title = public_text(row.get("title") or "Untitled", limit=70)
+    return f"• `{ps_number}` — {count_text} — {title}"
+
+
+def _format_summary(rows: list[dict[str, Any]], threshold: int) -> str:
+    hot = [row for row in rows if int(row.get("submitted_ideas_count") or 0) >= threshold]
+    top = rows[:10]
+    lines = [
+        "*SIH 2026 problem statements*",
+        "",
+        f"Tracked: {len(rows)}",
+        f"At or over {threshold}: {len(hot)}",
+        "",
+        "*Hottest*",
+    ]
+    if not top:
+        lines.append("No problem statements stored yet. Wait for the next scrape, or `!sih refresh`.")
+    else:
+        lines.extend(_format_ps_line(row) for row in top)
+        lines.extend(["", "Use `!sih hot`, `!sih top 15`, or `!sih SIH1601`."])
+    return "\n".join(lines)
+
+
+def _format_hot(rows: list[dict[str, Any]], threshold: int) -> str:
+    if not rows:
+        return f"No SIH 2026 PS has reached {threshold} submissions yet."
+    shown = rows[:WHATSAPP_LIST_LIMIT]
+    extra = len(rows) - len(shown)
+    lines = [f"*SIH 2026 PS at or over {threshold}* ({len(rows)})", ""]
+    lines.extend(_format_ps_line(row) for row in shown)
+    if extra > 0:
+        lines.append(f"\n…and {extra} more. Use `!sih top 25` for a shorter ranked list.")
+    return "\n".join(lines)
+
+
+def _format_one(row: dict[str, Any], threshold: int) -> str:
+    count = int(row.get("submitted_ideas_count") or 0)
+    over = "YES" if count >= threshold else "no"
+    return "\n".join(
+        [
+            f"*{public_text(row.get('ps_number'), limit=40)}*",
+            public_text(row.get("title") or "Untitled", limit=200),
+            "",
+            f"Organization: {public_text(row.get('organization') or '-', limit=100)}",
+            f"Theme: {public_text(row.get('theme') or '-', limit=80)}",
+            f"Category: {public_text(row.get('category') or '-', limit=40)}",
+            f"Submissions: {count}"
+            + (f"/{row['submitted_ideas_limit']}" if row.get("submitted_ideas_limit") not in (None, "") else ""),
+            f"Deadline: {public_text(row.get('deadline') or '-', limit=40)}",
+            f"Over {threshold}: {over}",
+        ]
+    )
+
+
+def ingest_rows(
+    store: SIHStore,
+    rows: list[dict[str, Any]],
+    source_url: str,
+    client: "NewClient | None",
+    group_id: str | None,
+    threshold: int,
+    *,
+    notify: bool = True,
+) -> dict[str, Any]:
+    store.upsert(rows)
+    over = [row for row in rows if int(row.get("submitted_ideas_count") or 0) >= threshold]
+    store.record_snapshot(source_url, len(rows), len(over))
+
+    pending = store.pending_alerts(threshold)
+    sent = 0
+    if notify and client is not None and group_id and pending:
+        chat = _build_chat_jid(group_id)
+        for row in pending:
+            try:
+                client.send_message(chat, _format_threshold_alert(row, threshold))
+            except Exception:
+                log.exception("Failed to send SIH alert for %s", row.get("ps_number"))
+                continue
+            store.mark_alerted(
+                row["ps_number"],
+                row.get("title") or "",
+                int(row["submitted_ideas_count"]),
+                threshold,
+            )
+            sent += 1
+            log.info(
+                "SIH alerted %s at %s submissions",
+                row["ps_number"],
+                row["submitted_ideas_count"],
+            )
+    return {
+        "total": len(rows),
+        "over_threshold": len(over),
+        "alerts_sent": sent,
+        "source_url": source_url,
+    }
+
+
+def poll_once(
+    store: SIHStore,
+    client: "NewClient | None",
+    group_id: str | None,
+    urls: list[str],
+    threshold: int,
+    *,
+    notify: bool = True,
+) -> dict[str, Any]:
+    rows, source_url = scrape_problem_statements(urls)
+    return ingest_rows(store, rows, source_url, client, group_id, threshold, notify=notify)
+
+
+def _wait_for_listener(thread: threading.Thread, port: int) -> bool:
+    deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if not thread.is_alive():
+            return False
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                return thread.is_alive()
+        except OSError:
+            time.sleep(0.05)
+    return False
+
+
+def create_ingest_app(
+    client: "NewClient",
+    store: SIHStore,
+    group_id: str | None,
+    secret: str,
+    threshold: int,
+) -> Flask:
+    app = Flask(__name__)
+    app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+    lock = threading.Lock()
+
+    @app.post("/sih-ingest")
+    def sih_ingest():
+        supplied = request.headers.get("X-SIH-Alert-Secret", "")
+        if not hmac.compare_digest(supplied, secret):
+            return jsonify({"error": "unauthorized"}), 401
+
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({"error": "request body must be a JSON object"}), 400
+
+        rows = payload.get("problem_statements")
+        if not isinstance(rows, list) or not rows:
+            return jsonify({"error": "problem_statements must be a non-empty array"}), 400
+        if len(rows) > MAX_ROWS:
+            return jsonify({"error": f"problem_statements exceeds {MAX_ROWS} rows"}), 400
+
+        cleaned: list[dict[str, Any]] = []
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            ps_number = str(item.get("ps_number") or "").strip()
+            if not ps_number:
+                continue
+            try:
+                count = int(item.get("submitted_ideas_count") or 0)
+            except (TypeError, ValueError):
+                count = 0
+            try:
+                raw_limit = item.get("submitted_ideas_limit")
+                limit = int(raw_limit) if raw_limit not in (None, "") else None
+            except (TypeError, ValueError):
+                limit = None
+            cleaned.append(
+                {
+                    "ps_number": ps_number[:64],
+                    "serial_number": str(item.get("serial_number") or "")[:32],
+                    "organization": str(item.get("organization") or "")[:500],
+                    "title": str(item.get("title") or "")[:500],
+                    "category": str(item.get("category") or "")[:64],
+                    "theme": str(item.get("theme") or "")[:128],
+                    "submitted_ideas_count": max(0, count),
+                    "submitted_ideas_limit": limit,
+                    "deadline": str(item.get("deadline") or "")[:64],
+                }
+            )
+        if not cleaned:
+            return jsonify({"error": "no valid problem statements"}), 400
+
+        source_url = str(payload.get("source_url") or "")[:500]
+        with lock:
+            result = ingest_rows(store, cleaned, source_url, client, group_id, threshold)
+        log.info(
+            "SIH ingest total=%s over=%s alerts=%s",
+            result["total"],
+            result["over_threshold"],
+            result["alerts_sent"],
+        )
+        return jsonify({"status": "ok", **result}), 200
+
+    @app.get("/sih-health")
+    def sih_health():
+        return jsonify({"status": "ok"}), 200
+
+    return app
+
+
+def _start_ingest_server(app: Flask, port: int) -> None:
+    def _run() -> None:
+        try:
+            log.info("Starting SIH ingest Flask server on 0.0.0.0:%s", port)
+            app.run(host="0.0.0.0", port=port, threaded=True, use_reloader=False)
+        except Exception:
+            log.exception("SIH ingest webhook failed on port %s", port)
+            raise
+
+    thread = threading.Thread(target=_run, name="SIHIngestWebhook", daemon=True)
+    thread.start()
+    if _wait_for_listener(thread, port):
+        log.info("SIH ingest webhook listening on :%s/sih-ingest", port)
+    else:
+        log.error("SIH ingest webhook did not become reachable on port %s", port)
+
+
+def _start_poller(
+    client: "NewClient",
+    store: SIHStore,
+    group_id: str | None,
+    urls: list[str],
+    threshold: int,
+    poll_seconds: int,
+) -> None:
+    def _loop() -> None:
+        time.sleep(15)
+        while True:
+            try:
+                result = poll_once(store, client, group_id, urls, threshold)
+                log.info(
+                    "SIH poll complete total=%s over=%s alerts=%s source=%s",
+                    result["total"],
+                    result["over_threshold"],
+                    result["alerts_sent"],
+                    result["source_url"],
+                )
+            except Exception:
+                log.exception("SIH poll failed")
+            time.sleep(max(60, poll_seconds))
+
+    threading.Thread(target=_loop, name="SIHPoller", daemon=True).start()
+    log.info("SIH in-process poller started every %ss (GHA ingest is preferred)", poll_seconds)
+
+
+def register(client: "NewClient", config: dict) -> Callable:
+    session_factory = config.get("db_session_factory")
+    if session_factory is None:
+        raise RuntimeError("SIH feature requires db_session_factory")
+
+    store = SIHStore(session_factory)
+    group_id = (config.get("sih_group_id") or "").strip() or None
+    threshold = int(config.get("sih_threshold") or DEFAULT_THRESHOLD)
+    poll_seconds = int(config.get("sih_poll_seconds") or 0)
+    urls = candidate_urls(config.get("sih_ps_url") or DEFAULT_URL)
+    secret = (config.get("sih_ingest_secret") or "").strip()
+    ingest_port = int(config.get("sih_ingest_port") or DEFAULT_INGEST_PORT)
+
+    if secret:
+        app = create_ingest_app(client, store, group_id, secret, threshold)
+        _start_ingest_server(app, ingest_port)
+    else:
+        log.warning(
+            "SIH ingest webhook disabled: set SIH_INGEST_SECRET "
+            "(and expose SIH_INGEST_PORT) so GitHub Actions can POST counts."
+        )
+
+    if poll_seconds > 0 and getattr(client, "_pbbot_sih_poller_started", False) is not True:
+        client._pbbot_sih_poller_started = True
+        _start_poller(client, store, group_id, urls, threshold, poll_seconds)
+    else:
+        log.info("SIH in-process poller off (SIH_POLL_SECONDS=%s). Using GitHub Actions ingest.", poll_seconds)
+
+    def on_message(client: "NewClient", message) -> None:
+        if not message.Info or not message.Info.MessageSource:
+            return
+        source = message.Info.MessageSource
+        chat = source.Chat
+        if getattr(chat, "Server", "") != "g.us":
+            return
+        body = _get_text(message)
+        if not body:
+            return
+        lower = body.strip().lower()
+        if lower != "!sih" and not lower.startswith("!sih "):
+            return
+
+        actor = gate(session_factory, source.Sender, client, chat, "member", "sih")
+        if not actor:
+            return
+
+        args = body.strip()[4:].strip()
+        try:
+            if not args:
+                rows = store.list_problem_statements()
+                client.send_message(chat, _format_summary(rows, threshold))
+                return
+            if args.lower() == "hot":
+                rows = store.list_problem_statements(min_count=threshold)
+                client.send_message(chat, _format_hot(rows, threshold))
+                return
+            if args.lower() == "refresh":
+                result = poll_once(store, client, group_id, urls, threshold)
+                client.send_message(
+                    chat,
+                    "SIH refresh complete: "
+                    f"{result['total']} PS, "
+                    f"{result['over_threshold']} over {threshold}, "
+                    f"{result['alerts_sent']} new alert(s).",
+                )
+                return
+            if args.lower().startswith("top"):
+                _, _, rest = args.partition(" ")
+                try:
+                    limit = int(rest.strip() or "10")
+                except ValueError:
+                    limit = 10
+                limit = max(1, min(limit, 25))
+                rows = store.list_problem_statements()[:limit]
+                lines = [f"*SIH 2026 top {len(rows)}*", ""]
+                lines.extend(_format_ps_line(row) for row in rows)
+                client.send_message(chat, "\n".join(lines) if rows else "No PS stored yet.")
+                return
+
+            ps_number = args.split()[0].strip()
+            row = store.get(ps_number)
+            if row is None:
+                client.send_message(chat, f"No stored SIH PS matching `{public_text(ps_number, limit=40)}`.")
+                return
+            client.send_message(chat, _format_one(row, threshold))
+        except Exception:
+            log.exception("SIH command failed")
+            client.send_message(chat, "Could not complete that SIH request.")
+
+    log.info("SIH 2026 feature registered")
+    return on_message

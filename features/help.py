@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from neonize.events import MessageEv
 from features.subgroups import _get_text
 from features.text import public_text
+from features.sih import SIH_MODULE_HELP
 
 if TYPE_CHECKING:
     from neonize.client import NewClient
@@ -228,6 +229,7 @@ MODULE_HELP = {
         "• `!audit`\n"
         "• `!audit update` _(filter by operation)_"
     ),
+        "sih": SIH_MODULE_HELP,
 }
 
 # Work is the single documented workflow for event/task assignment and progress.
@@ -257,6 +259,7 @@ GLOBAL_HELP = (
     "• `!help reminders` — Scheduled reminders\n"
     "• `!help incidents` — Incident alerts\n\n"
     "Type `!help <module>` for detailed commands."
+    "• `!help sih` — SIH 2026 submission watcher\n"
 )
 
 def register(client: "NewClient", config: dict) -> callable:
@@ -302,7 +305,8 @@ def register(client: "NewClient", config: dict) -> callable:
                     "update-edit": "work", "schema": "schema", "labels": "labels", "label": "labels",
                     "report": "reports", "reports": "reports", "audit": "reports",
                     "reminders": "reminders", "reminder-config": "reminders",
-                    "reminder-run": "reminders", "reminder-history": "reminders"
+                    "reminder-run": "reminders", "reminder-history": "reminders",
+                    "sih": "sih",
                 }
                 
                 module = cmd_to_module.get(args)

@@ -185,6 +185,43 @@ class FellowshipAlert(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
+class SIHProblemStatement(Base):
+    __tablename__ = "sih_problem_statements"
+
+    ps_number: Mapped[str] = mapped_column(String(64), primary_key=True)
+    serial_number: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    organization: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    category: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    theme: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    submitted_ideas_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
+    submitted_ideas_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    deadline: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SIHAlert(Base):
+    __tablename__ = "sih_alerts"
+    __table_args__ = (UniqueConstraint("ps_number", "threshold", name="uq_sih_alert_ps_threshold"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ps_number: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    submitted_ideas_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    threshold: Mapped[int] = mapped_column(Integer, nullable=False)
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SIHSnapshot(Base):
+    __tablename__ = "sih_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    total: Mapped[int] = mapped_column(Integer, nullable=False)
+    over_threshold: Mapped[int] = mapped_column(Integer, nullable=False)
+
 
 class Task(Base):
     """PRD FR-5: trackable work item, optionally linked to an organization event."""
