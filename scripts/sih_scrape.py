@@ -19,6 +19,13 @@ import logging
 import sys
 from pathlib import Path
 
+# Running this file directly makes ``scripts/`` the first import location.
+# Add the repository root so sibling packages such as ``features`` resolve in
+# local shells, cron, and GitHub Actions alike.
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
 import httpx
 
 from features.sih_scrape import (
