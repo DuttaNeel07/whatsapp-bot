@@ -27,6 +27,7 @@ jobs:
           SIH_INGEST_URL: ${{ secrets.SIH_INGEST_URL }}
           SIH_INGEST_SECRET: ${{ secrets.SIH_INGEST_SECRET }}
           SIH_PS_URL: ${{ vars.SIH_PS_URL }}
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           python scripts/sih_scrape.py \
             --url "${SIH_PS_URL:-https://sih.gov.in/sih2026PS}" \
