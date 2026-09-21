@@ -30,7 +30,7 @@ jobs:
         run: |
           : "${SIH_INGEST_URL:?Configure the SIH_INGEST_URL repository secret}"
           : "${SIH_INGEST_SECRET:?Configure the SIH_INGEST_SECRET repository secret}"
-          python scripts/sih_scrape.py \
+          python -m scripts.sih_scrape \
             --url "${SIH_PS_URL:-https://sih.gov.in/sih2026PS}" \
             --post "$SIH_INGEST_URL" \
             --secret "$SIH_INGEST_SECRET"
