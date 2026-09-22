@@ -222,6 +222,14 @@ class SIHSnapshot(Base):
     total: Mapped[int] = mapped_column(Integer, nullable=False)
     over_threshold: Mapped[int] = mapped_column(Integer, nullable=False)
 
+class SIHWatchlist(Base):
+    __tablename__ = "sih_watchlists"
+    __table_args__ = (UniqueConstraint("list_name", "ps_number", name="uq_sih_watchlist_list_ps"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    list_name: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    ps_number: Mapped[str] = mapped_column(String(64), nullable=False)
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 class Task(Base):
     """PRD FR-5: trackable work item, optionally linked to an organization event."""

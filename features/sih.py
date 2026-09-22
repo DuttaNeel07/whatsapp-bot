@@ -27,7 +27,7 @@ from flask import Flask, jsonify, request
 
 from db.auth import gate
 from db.sih_store import SIHStore
-from features.sih_scrape import candidate_urls, scrape_problem_statements
+from features.sih_scrape import candidate_urls, parse_ps_list, scrape_problem_statements
 from features.subgroups import _get_text
 from features.text import public_text
 
@@ -49,10 +49,15 @@ SIH_MODULE_HELP = (
     "`!sih hot` — every PS at or over 300 submissions.\n"
     "`!sih top [n]` — top n by submissions (default 10, max 25).\n"
     "`!sih <ps-number>` — one problem statement, e.g. `!sih SIH1601`.\n"
-    "`!sih refresh` — scrape now from this host (fallback; GitHub Actions is preferred).\n\n"
-    "A GitHub Action scrapes sih.gov.in on a schedule and POSTs counts here. "
+    "`!sih refresh` — scrape now from this host.\n"
+    "`!sih add dsce 26001, 26002` — track those PS on the DSCE list.\n"
+    "`!sih remove dsce 26001` — drop PS from the DSCE list.\n"
+    "`!sih dsce top [n]` — hottest tracked DSCE PS (default 10).\n\n"
     "The bot alerts the SIH group the first time a PS crosses 300 submissions."
 )
+
+DSCE_LIST = "dsce"
+WATCHLIST_ADD_LIMIT = 100
 
 
 def _build_chat_jid(value: str):
@@ -407,6 +412,73 @@ def register(client: "NewClient", config: dict) -> Callable:
                     f"{result['alerts_sent']} new alert(s).",
                 )
                 return
+            lower_args = args.lower()
+            if lower_args.startswith("add dsce"):
+                tokens = args[8:].strip()
+                ps_numbers = parse_ps_list(tokens)
+                if not ps_numbers:
+                    client.send_message(
+                        chat,
+                        "Usage: `!sih add dsce 26001, 26002` (or `SIH26001`).",
+                    )
+                    return
+                if len(ps_numbers) > WATCHLIST_ADD_LIMIT:
+                    client.send_message(chat, f"Add at most {WATCHLIST_ADD_LIMIT} PS at a time.")
+                    return
+                added, already = store.add_watchlist(DSCE_LIST, ps_numbers)
+                bits = []
+                if added:
+                    bits.append("added " + ", ".join(f"`{n}`" for n in added))
+                if already:
+                    bits.append("already tracked " + ", ".join(f"`{n}`" for n in already))
+                client.send_message(chat, "DSCE watchlist: " + "; ".join(bits) + ".")
+                return
+            if lower_args.startswith("remove dsce"):
+                tokens = args[11:].strip()
+                ps_numbers = parse_ps_list(tokens)
+                if not ps_numbers:
+                    client.send_message(
+                        chat,
+                        "Usage: `!sih remove dsce 26001, 26002`.",
+                    )
+                    return
+                removed, missing = store.remove_watchlist(DSCE_LIST, ps_numbers)
+                bits = []
+                if removed:
+                    bits.append("removed " + ", ".join(f"`{n}`" for n in removed))
+                if missing:
+                    bits.append("not on list " + ", ".join(f"`{n}`" for n in missing))
+                client.send_message(chat, "DSCE watchlist: " + "; ".join(bits) + ".")
+                return
+            if lower_args == "dsce" or lower_args.startswith("dsce "):
+                rest = args[4:].strip()
+                rest_lower = rest.lower()
+                limit = 10
+                if rest_lower == "top" or rest_lower.startswith("top "):
+                    _, _, ntext = rest.partition(" ")
+                    try:
+                        limit = int(ntext.strip() or "10")
+                    except ValueError:
+                        limit = 10
+                elif rest:
+                    try:
+                        limit = int(rest)
+                    except ValueError:
+                        limit = 10
+                limit = max(1, min(limit, 25))
+                ranked = store.list_watchlist_ranked(DSCE_LIST)
+                if not ranked:
+                    client.send_message(
+                        chat,
+                        "DSCE watchlist is empty. Add PS with `!sih add dsce 26001, 26002`.",
+                    )
+                    return
+                shown = ranked[:limit]
+                lines = [f"*DSCE watchlist top {len(shown)}* ({len(ranked)} tracked)", ""]
+                lines.extend(_format_ps_line(row) for row in shown)
+                client.send_message(chat, "\n".join(lines))
+                return
+
             if args.lower().startswith("top"):
                 _, _, rest = args.partition(" ")
                 try:
