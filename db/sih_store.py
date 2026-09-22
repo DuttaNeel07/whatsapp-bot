@@ -48,7 +48,7 @@ from typing import Any, Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import SIHAlert, SIHProblemStatement, SIHSnapshot
+from .models import SIHAlert, SIHProblemStatement, SIHSnapshot, SIHWatchlist
 
 
 def _optional_int(value: Any) -> int | None:
@@ -143,6 +143,82 @@ class SIHStore:
                 .order_by(SIHProblemStatement.submitted_ideas_count.desc())
             ).all()
             return [self._to_dict(row) for row in rows if row.ps_number not in alerted]
+        
+    def add_watchlist(self, list_name: str, ps_numbers: list[str]) -> tuple[list[str], list[str]]:
+            name = (list_name or "").strip().lower()
+            added: list[str] = []
+            already: list[str] = []
+            now = datetime.now(timezone.utc)
+            with self.session_factory.begin() as session:
+                for ps_number in ps_numbers:
+                    existing = session.scalars(
+                        select(SIHWatchlist).where(
+                            SIHWatchlist.list_name == name,
+                            SIHWatchlist.ps_number == ps_number,
+                        )
+                    ).first()
+                    if existing is not None:
+                        already.append(ps_number)
+                        continue
+                    session.add(
+                        SIHWatchlist(list_name=name, ps_number=ps_number, added_at=now)
+                    )
+                    added.append(ps_number)
+            return added, already
+
+    def remove_watchlist(self, list_name: str, ps_numbers: list[str]) -> tuple[list[str], list[str]]:
+        name = (list_name or "").strip().lower()
+        removed: list[str] = []
+        missing: list[str] = []
+        with self.session_factory.begin() as session:
+            for ps_number in ps_numbers:
+                existing = session.scalars(
+                    select(SIHWatchlist).where(
+                        SIHWatchlist.list_name == name,
+                        SIHWatchlist.ps_number == ps_number,
+                    )
+                ).first()
+                if existing is None:
+                    missing.append(ps_number)
+                    continue
+                session.delete(existing)
+                removed.append(ps_number)
+        return removed, missing
+
+    def list_watchlist_ranked(self, list_name: str) -> list[dict[str, Any]]:
+        name = (list_name or "").strip().lower()
+        with self.session_factory() as session:
+            watched = session.scalars(
+                select(SIHWatchlist)
+                .where(SIHWatchlist.list_name == name)
+                .order_by(SIHWatchlist.ps_number.asc())
+            ).all()
+            rows: list[dict[str, Any]] = []
+            for item in watched:
+                ps = session.get(SIHProblemStatement, item.ps_number)
+                if ps is not None:
+                    rows.append(self._to_dict(ps))
+                else:
+                    rows.append(
+                        {
+                            "ps_number": item.ps_number,
+                            "serial_number": "",
+                            "organization": "",
+                            "title": "(not scraped yet)",
+                            "category": "",
+                            "theme": "",
+                            "submitted_ideas_count": 0,
+                            "submitted_ideas_limit": None,
+                            "deadline": "",
+                            "last_seen_at": "",
+                            "updated_at": "",
+                        }
+                    )
+        rows.sort(
+            key=lambda row: (-int(row.get("submitted_ideas_count") or 0), row.get("ps_number") or "")
+        )
+        return rows
+
 
     def mark_alerted(self, ps_number: str, title: str, count: int, threshold: int) -> None:
         with self.session_factory.begin() as session:

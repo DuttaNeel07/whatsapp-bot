@@ -60,6 +60,30 @@ def parse_count(value: Any) -> int:
 _SUBMISSION_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
 PS_NUMBER_RE = re.compile(r"^SIH\d+$", re.I)
 
+def normalize_ps_number(token: str) -> str | None:
+    raw = (token or "").strip().upper().strip("[],")
+    if not raw:
+        return None
+    if raw.isdigit():
+        raw = f"SIH{raw}"
+    if not PS_NUMBER_RE.match(raw):
+        return None
+    return raw
+
+
+def parse_ps_list(text: str) -> list[str]:
+    cleaned = (text or "").replace("[", " ").replace("]", " ").replace(",", " ")
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for token in cleaned.split():
+        ps_number = normalize_ps_number(token)
+        if not ps_number or ps_number in seen:
+            continue
+        seen.add(ps_number)
+        ordered.append(ps_number)
+    return ordered
+
+
 
 def parse_submission(value: Any) -> tuple[int, int | None]:
     """Parse '225/500' -> (225, 500). A bare '225' -> (225, None)."""
